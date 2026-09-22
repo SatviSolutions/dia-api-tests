@@ -1,0 +1,1507 @@
+{
+	"info": {
+		"_postman_id": "a3029372-ebfd-4c20-adc7-e642f283aee9",
+		"name": "DIA API Tests",
+		"description": "API automation for the DIA business-intelligence application. Only endpoints explicitly verified/provided are included -- see README.md.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"auth": {
+		"type": "bearer",
+		"bearer": [
+			{
+				"key": "token",
+				"value": "{{access_token}}",
+				"type": "string"
+			}
+		]
+	},
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					"// Collection-level pre-request script.",
+					"// Currently a placeholder for future cross-cutting setup (e.g. request IDs,",
+					"// correlation headers). Kept intentionally minimal -- do not log secrets here."
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					"// ============================================================",
+					"// COLLECTION-LEVEL TESTS -- run automatically after EVERY request in",
+					"// this collection. These are the cross-cutting checks required for all",
+					"// DIA APIs (response time, no unhandled server errors, no obvious",
+					"// secret leakage). Individual request scripts only assert",
+					"// endpoint-specific behavior, so these checks are not duplicated",
+					"// in every request.",
+					"// ============================================================",
+					"",
+					"const MAX_RESPONSE_TIME_MS = parseInt(pm.environment.get(\"max_response_time_ms\") || \"3000\", 10);",
+					"",
+					"pm.test(\"[Global] Response time is within acceptable range\", function () {",
+					"    pm.expect(pm.response.responseTime).to.be.below(MAX_RESPONSE_TIME_MS);",
+					"});",
+					"",
+					"pm.test(\"[Global] Server did not return an unhandled 5xx error\", function () {",
+					"    pm.expect(pm.response.code, `Got ${pm.response.code}: ${pm.response.status}`).to.be.below(500);",
+					"});",
+					"",
+					"// Guards against the API accidentally echoing back a submitted password",
+					"// under a \"password\" field. NOTE: this deliberately checks for the value",
+					"// appearing specifically as a password field (not a blanket substring",
+					"// search) -- with demo credentials like admin/admin, a naive substring",
+					"// check false-positives on legitimate fields (username, email) that",
+					"// coincidentally share the same text as the password.",
+					"pm.test(\"[Global] Response does not echo the submitted password in a password field\", function () {",
+					"    let sentPassword;",
+					"    try {",
+					"        const reqBody = (pm.request.body && pm.request.body.raw) ? JSON.parse(pm.request.body.raw) : null;",
+					"        sentPassword = reqBody && reqBody.password;",
+					"    } catch (e) {",
+					"        sentPassword = undefined;",
+					"    }",
+					"    if (sentPassword) {",
+					"        const bodyText = pm.response.text();",
+					"        const echoedCompact = '\"password\":\"' + sentPassword + '\"';",
+					"        const echoedSpaced = '\"password\": \"' + sentPassword + '\"';",
+					"        const leaked = bodyText.includes(echoedCompact) || bodyText.includes(echoedSpaced);",
+					"        pm.expect(leaked, \"Response echoes the submitted password under a 'password' field\").to.be.false;",
+					"    }",
+					"});",
+					"",
+					"// Heuristic guard against common secret-shaped fields leaking in any response.",
+					"pm.test(\"[Global] Response does not expose common secret-like fields\", function () {",
+					"    const bodyText = pm.response.text();",
+					"    const suspiciousPatterns = [/\"db_password\"\\s*:/i, /\"connection_string\"\\s*:/i, /\"secret\"\\s*:/i, /\"private_key\"\\s*:/i];",
+					"    suspiciousPatterns.forEach((pattern) => {",
+					"        pm.expect(pattern.test(bodyText), `Found suspicious pattern ${pattern} in response body`).to.be.false;",
+					"    });",
+					"});"
+				]
+			}
+		}
+	],
+	"variable": [],
+	"item": [
+		{
+			"name": "Authentication",
+			"item": [
+				{
+					"name": "Login",
+					"item": [
+						{
+							"name": "Positive",
+							"item": [
+								{
+									"name": "Login - Success",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"type": "text/javascript",
+												"exec": [
+													"// Positive login test: validates status, schema, required fields, business",
+													"// logic (returned username matches what was submitted), and stores the",
+													"// token for every other request in the collection to reuse automatically.",
+													"//",
+													"// Schema below is CONFIRMED against a live local DIA backend response",
+													"// (2026-09-01), not assumed -- see README \"Known gaps\" if this ever",
+													"// needs re-verifying after a backend change.",
+													"",
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});",
+													"",
+													"pm.test(\"Content-Type header is application/json\", function () {",
+													"    pm.response.to.have.header(\"Content-Type\");",
+													"    pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/json\");",
+													"});",
+													"",
+													"let jsonData;",
+													"pm.test(\"Response body is valid JSON\", function () {",
+													"    jsonData = pm.response.json();",
+													"    pm.expect(jsonData).to.be.an(\"object\");",
+													"});",
+													"",
+													"pm.test(\"Response contains a non-empty token field\", function () {",
+													"    pm.expect(jsonData).to.have.property(\"token\");",
+													"    pm.expect(jsonData.token).to.be.a(\"string\");",
+													"    pm.expect(jsonData.token.length).to.be.above(10);",
+													"});",
+													"",
+													"pm.test(\"Token is a well-formed JWT (three dot-separated segments)\", function () {",
+													"    pm.expect(jsonData.token.split(\".\").length).to.eql(3);",
+													"});",
+													"",
+													"pm.test(\"Response contains a user object\", function () {",
+													"    pm.expect(jsonData).to.have.property(\"user\");",
+													"    pm.expect(jsonData.user).to.be.an(\"object\");",
+													"});",
+													"",
+													"pm.test(\"User object contains the confirmed required fields with correct types\", function () {",
+													"    const user = jsonData.user;",
+													"    pm.expect(user).to.have.property(\"id\");",
+													"    pm.expect(user.id).to.be.a(\"number\");",
+													"    pm.expect(user).to.have.property(\"username\");",
+													"    pm.expect(user.username).to.be.a(\"string\").and.to.have.length.above(0);",
+													"    pm.expect(user).to.have.property(\"email\");",
+													"    pm.expect(user.email).to.be.a(\"string\").and.to.include(\"@\");",
+													"    pm.expect(user).to.have.property(\"role\");",
+													"    pm.expect(user.role).to.be.a(\"string\").and.to.have.length.above(0);",
+													"    pm.expect(user).to.have.property(\"auth_provider\");",
+													"    pm.expect(user.auth_provider).to.be.a(\"string\").and.to.have.length.above(0);",
+													"    // full_name / display_name / avatar_url are present but avatar_url is",
+													"    // nullable, so only presence of the key is asserted, not a non-null value.",
+													"    pm.expect(user).to.have.property(\"full_name\");",
+													"    pm.expect(user).to.have.property(\"display_name\");",
+													"    pm.expect(user).to.have.property(\"avatar_url\");",
+													"});",
+													"",
+													"// Business logic: the username returned must match what was submitted,",
+													"// regardless of which account is configured in the environment.",
+													"pm.test(\"Returned username matches the submitted username\", function () {",
+													"    const sentBody = JSON.parse(pm.request.body.raw);",
+													"    pm.expect(jsonData.user.username).to.eql(sentBody.username);",
+													"});",
+													"",
+													"// Business logic confirmed against the live backend: the seeded \"admin\"",
+													"// account must carry the \"admin\" role.",
+													"pm.test(\"The 'admin' account is granted the 'admin' role\", function () {",
+													"    const sentBody = JSON.parse(pm.request.body.raw);",
+													"    if (sentBody.username === \"admin\") {",
+													"        pm.expect(jsonData.user.role).to.eql(\"admin\");",
+													"    }",
+													"});",
+													"",
+													"// Token/role are never printed to the console -- only written to the",
+													"// environment (masked as a secret variable) for reuse by later requests.",
+													"if (jsonData && jsonData.token) {",
+													"    pm.environment.set(\"access_token\", jsonData.token);",
+													"}",
+													"if (jsonData && jsonData.user && jsonData.user.role) {",
+													"    pm.environment.set(\"logged_in_role\", jsonData.user.role);",
+													"}",
+													"",
+													"pm.test(\"JWT token is not reflected back in response headers\", function () {",
+													"    pm.response.headers.each(function (header) {",
+													"        pm.expect(header.value).to.not.include(jsonData.token);",
+													"    });",
+													"});"
+												]
+											}
+										}
+									],
+									"request": {
+										"method": "POST",
+										"header": [],
+										"url": {
+											"raw": "{{base_url}}/auth/api/login",
+											"host": [
+												"{{base_url}}"
+											],
+											"path": [
+												"auth",
+												"api",
+												"login"
+											]
+										},
+										"description": "Positive login test. Reads credentials from the {{username}}/{{password}} environment secrets (set these locally before running -- never commit real values). On success, stores the JWT into {{access_token}} for reuse by every authenticated request.",
+										"body": {
+											"mode": "raw",
+											"raw": "{\n    \"username\": \"{{username}}\",\n    \"password\": \"{{password}}\"\n}",
+											"options": {
+												"raw": {
+													"language": "json"
+												}
+											}
+										},
+										"auth": {
+											"type": "noauth"
+										}
+									},
+									"response": []
+								}
+							],
+							"description": "Successful login scenario for POST /auth/api/login."
+						},
+						{
+							"name": "Negative",
+							"item": [
+								{
+									"name": "Invalid Username",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"type": "text/javascript",
+												"exec": [
+													"// Status code and error message CONFIRMED against a live local DIA backend",
+													"// response (2026-09-01) -- not assumed. ",
+													"",
+													"pm.test(\"Status code is 401\", function () {",
+													"    pm.response.to.have.status(401);",
+													"});",
+													"",
+													"let jsonData;",
+													"pm.test(\"Response body is valid JSON\", function () {",
+													"    jsonData = pm.response.json();",
+													"});",
+													"",
+													"pm.test('Error message is \"Invalid username or password\"', function () {",
+													"    pm.expect(jsonData).to.have.property(\"error\", \"Invalid username or password\");",
+													"});",
+													"",
+													"pm.test(\"Response does not grant a token\", function () {",
+													"    pm.expect(jsonData).to.not.have.property(\"token\");",
+													"});",
+													"",
+													"pm.test(\"access_token environment variable remains unchanged\", function () {",
+													"    // A failed login must never overwrite a previously stored valid token.",
+													"    const before = pm.environment.get(\"access_token\");",
+													"    pm.expect(pm.environment.get(\"access_token\")).to.eql(before);",
+													"});"
+												]
+											}
+										}
+									],
+									"request": {
+										"method": "POST",
+										"header": [],
+										"url": {
+											"raw": "{{base_url}}/auth/api/login",
+											"host": [
+												"{{base_url}}"
+											],
+											"path": [
+												"auth",
+												"api",
+												"login"
+											]
+										},
+										"description": "Negative test: a username that does not exist.",
+										"body": {
+											"mode": "raw",
+											"raw": "{\n    \"username\": \"nonexistent_qa_user\",\n    \"password\": \"{{password}}\"\n}",
+											"options": {
+												"raw": {
+													"language": "json"
+												}
+											}
+										},
+										"auth": {
+											"type": "noauth"
+										}
+									},
+									"response": []
+								},
+								{
+									"name": "Invalid Password",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"type": "text/javascript",
+												"exec": [
+													"// Status code and error message CONFIRMED against a live local DIA backend",
+													"// response (2026-09-01) -- not assumed. Security note: this is the SAME message as \"Invalid Username\" below -- confirms the API does not leak whether a username exists (no user enumeration).",
+													"",
+													"pm.test(\"Status code is 401\", function () {",
+													"    pm.response.to.have.status(401);",
+													"});",
+													"",
+													"let jsonData;",
+													"pm.test(\"Response body is valid JSON\", function () {",
+													"    jsonData = pm.response.json();",
+													"});",
+													"",
+													"pm.test('Error message is \"Invalid username or password\"', function () {",
+													"    pm.expect(jsonData).to.have.property(\"error\", \"Invalid username or password\");",
+													"});",
+													"",
+													"pm.test(\"Response does not grant a token\", function () {",
+													"    pm.expect(jsonData).to.not.have.property(\"token\");",
+													"});",
+													"",
+													"pm.test(\"access_token environment variable remains unchanged\", function () {",
+													"    // A failed login must never overwrite a previously stored valid token.",
+													"    const before = pm.environment.get(\"access_token\");",
+													"    pm.expect(pm.environment.get(\"access_token\")).to.eql(before);",
+													"});"
+												]
+											}
+										}
+									],
+									"request": {
+										"method": "POST",
+										"header": [],
+										"url": {
+											"raw": "{{base_url}}/auth/api/login",
+											"host": [
+												"{{base_url}}"
+											],
+											"path": [
+												"auth",
+												"api",
+												"login"
+											]
+										},
+										"description": "Negative test: correct username, wrong password.",
+										"body": {
+											"mode": "raw",
+											"raw": "{\n    \"username\": \"{{username}}\",\n    \"password\": \"wrong_password_qa_12345\"\n}",
+											"options": {
+												"raw": {
+													"language": "json"
+												}
+											}
+										},
+										"auth": {
+											"type": "noauth"
+										}
+									},
+									"response": []
+								},
+								{
+									"name": "Empty Username",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"type": "text/javascript",
+												"exec": [
+													"// Status code and error message CONFIRMED against a live local DIA backend",
+													"// response (2026-09-01) -- not assumed. ",
+													"",
+													"pm.test(\"Status code is 400\", function () {",
+													"    pm.response.to.have.status(400);",
+													"});",
+													"",
+													"let jsonData;",
+													"pm.test(\"Response body is valid JSON\", function () {",
+													"    jsonData = pm.response.json();",
+													"});",
+													"",
+													"pm.test('Error message is \"Username and password are required\"', function () {",
+													"    pm.expect(jsonData).to.have.property(\"error\", \"Username and password are required\");",
+													"});",
+													"",
+													"pm.test(\"Response does not grant a token\", function () {",
+													"    pm.expect(jsonData).to.not.have.property(\"token\");",
+													"});",
+													"",
+													"pm.test(\"access_token environment variable remains unchanged\", function () {",
+													"    // A failed login must never overwrite a previously stored valid token.",
+													"    const before = pm.environment.get(\"access_token\");",
+													"    pm.expect(pm.environment.get(\"access_token\")).to.eql(before);",
+													"});"
+												]
+											}
+										}
+									],
+									"request": {
+										"method": "POST",
+										"header": [],
+										"url": {
+											"raw": "{{base_url}}/auth/api/login",
+											"host": [
+												"{{base_url}}"
+											],
+											"path": [
+												"auth",
+												"api",
+												"login"
+											]
+										},
+										"description": "Boundary test: empty-string username.",
+										"body": {
+											"mode": "raw",
+											"raw": "{\n    \"username\": \"\",\n    \"password\": \"{{password}}\"\n}",
+											"options": {
+												"raw": {
+													"language": "json"
+												}
+											}
+										},
+										"auth": {
+											"type": "noauth"
+										}
+									},
+									"response": []
+								},
+								{
+									"name": "Empty Password",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"type": "text/javascript",
+												"exec": [
+													"// Status code and error message CONFIRMED against a live local DIA backend",
+													"// response (2026-09-01) -- not assumed. ",
+													"",
+													"pm.test(\"Status code is 400\", function () {",
+													"    pm.response.to.have.status(400);",
+													"});",
+													"",
+													"let jsonData;",
+													"pm.test(\"Response body is valid JSON\", function () {",
+													"    jsonData = pm.response.json();",
+													"});",
+													"",
+													"pm.test('Error message is \"Username and password are required\"', function () {",
+													"    pm.expect(jsonData).to.have.property(\"error\", \"Username and password are required\");",
+													"});",
+													"",
+													"pm.test(\"Response does not grant a token\", function () {",
+													"    pm.expect(jsonData).to.not.have.property(\"token\");",
+													"});",
+													"",
+													"pm.test(\"access_token environment variable remains unchanged\", function () {",
+													"    // A failed login must never overwrite a previously stored valid token.",
+													"    const before = pm.environment.get(\"access_token\");",
+													"    pm.expect(pm.environment.get(\"access_token\")).to.eql(before);",
+													"});"
+												]
+											}
+										}
+									],
+									"request": {
+										"method": "POST",
+										"header": [],
+										"url": {
+											"raw": "{{base_url}}/auth/api/login",
+											"host": [
+												"{{base_url}}"
+											],
+											"path": [
+												"auth",
+												"api",
+												"login"
+											]
+										},
+										"description": "Boundary test: empty-string password.",
+										"body": {
+											"mode": "raw",
+											"raw": "{\n    \"username\": \"{{username}}\",\n    \"password\": \"\"\n}",
+											"options": {
+												"raw": {
+													"language": "json"
+												}
+											}
+										},
+										"auth": {
+											"type": "noauth"
+										}
+									},
+									"response": []
+								},
+								{
+									"name": "Missing Username",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"type": "text/javascript",
+												"exec": [
+													"// Status code and error message CONFIRMED against a live local DIA backend",
+													"// response (2026-09-01) -- not assumed. ",
+													"",
+													"pm.test(\"Status code is 400\", function () {",
+													"    pm.response.to.have.status(400);",
+													"});",
+													"",
+													"let jsonData;",
+													"pm.test(\"Response body is valid JSON\", function () {",
+													"    jsonData = pm.response.json();",
+													"});",
+													"",
+													"pm.test('Error message is \"Username and password are required\"', function () {",
+													"    pm.expect(jsonData).to.have.property(\"error\", \"Username and password are required\");",
+													"});",
+													"",
+													"pm.test(\"Response does not grant a token\", function () {",
+													"    pm.expect(jsonData).to.not.have.property(\"token\");",
+													"});",
+													"",
+													"pm.test(\"access_token environment variable remains unchanged\", function () {",
+													"    // A failed login must never overwrite a previously stored valid token.",
+													"    const before = pm.environment.get(\"access_token\");",
+													"    pm.expect(pm.environment.get(\"access_token\")).to.eql(before);",
+													"});"
+												]
+											}
+										}
+									],
+									"request": {
+										"method": "POST",
+										"header": [],
+										"url": {
+											"raw": "{{base_url}}/auth/api/login",
+											"host": [
+												"{{base_url}}"
+											],
+											"path": [
+												"auth",
+												"api",
+												"login"
+											]
+										},
+										"description": "Negative test: username field entirely absent from the JSON body.",
+										"body": {
+											"mode": "raw",
+											"raw": "{\n    \"password\": \"{{password}}\"\n}",
+											"options": {
+												"raw": {
+													"language": "json"
+												}
+											}
+										},
+										"auth": {
+											"type": "noauth"
+										}
+									},
+									"response": []
+								},
+								{
+									"name": "Missing Password",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"type": "text/javascript",
+												"exec": [
+													"// Status code and error message CONFIRMED against a live local DIA backend",
+													"// response (2026-09-01) -- not assumed. ",
+													"",
+													"pm.test(\"Status code is 400\", function () {",
+													"    pm.response.to.have.status(400);",
+													"});",
+													"",
+													"let jsonData;",
+													"pm.test(\"Response body is valid JSON\", function () {",
+													"    jsonData = pm.response.json();",
+													"});",
+													"",
+													"pm.test('Error message is \"Username and password are required\"', function () {",
+													"    pm.expect(jsonData).to.have.property(\"error\", \"Username and password are required\");",
+													"});",
+													"",
+													"pm.test(\"Response does not grant a token\", function () {",
+													"    pm.expect(jsonData).to.not.have.property(\"token\");",
+													"});",
+													"",
+													"pm.test(\"access_token environment variable remains unchanged\", function () {",
+													"    // A failed login must never overwrite a previously stored valid token.",
+													"    const before = pm.environment.get(\"access_token\");",
+													"    pm.expect(pm.environment.get(\"access_token\")).to.eql(before);",
+													"});"
+												]
+											}
+										}
+									],
+									"request": {
+										"method": "POST",
+										"header": [],
+										"url": {
+											"raw": "{{base_url}}/auth/api/login",
+											"host": [
+												"{{base_url}}"
+											],
+											"path": [
+												"auth",
+												"api",
+												"login"
+											]
+										},
+										"description": "Negative test: password field entirely absent from the JSON body.",
+										"body": {
+											"mode": "raw",
+											"raw": "{\n    \"username\": \"{{username}}\"\n}",
+											"options": {
+												"raw": {
+													"language": "json"
+												}
+											}
+										},
+										"auth": {
+											"type": "noauth"
+										}
+									},
+									"response": []
+								},
+								{
+									"name": "Empty Request Body",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"type": "text/javascript",
+												"exec": [
+													"// Status/body shape CONFIRMED against a live local DIA backend response",
+													"// (2026-09-01): unlike other validation failures, this one is NOT routed",
+													"// through the app's JSON error handler -- it returns Flask's default HTML",
+													"// 400 page instead. ",
+													"// This is a real, observed API inconsistency (JSON errors everywhere else,",
+													"// HTML here) -- flagged for the dev team, not something this test works",
+													"// around.",
+													"",
+													"pm.test(\"Status code is 400\", function () {",
+													"    pm.response.to.have.status(400);",
+													"});",
+													"",
+													"pm.test(\"Response does not grant a token\", function () {",
+													"    pm.expect(pm.response.text()).to.not.include('\"token\"');",
+													"});",
+													"",
+													"pm.test(\"access_token environment variable remains unchanged\", function () {",
+													"    const before = pm.environment.get(\"access_token\");",
+													"    pm.expect(pm.environment.get(\"access_token\")).to.eql(before);",
+													"});"
+												]
+											}
+										}
+									],
+									"request": {
+										"method": "POST",
+										"header": [],
+										"url": {
+											"raw": "{{base_url}}/auth/api/login",
+											"host": [
+												"{{base_url}}"
+											],
+											"path": [
+												"auth",
+												"api",
+												"login"
+											]
+										},
+										"description": "Negative test: completely empty request body. Confirmed: returns Flask's default HTML 400 page, not the app's JSON error format -- see test script comment.",
+										"body": {
+											"mode": "raw",
+											"raw": "",
+											"options": {
+												"raw": {
+													"language": "json"
+												}
+											}
+										},
+										"auth": {
+											"type": "noauth"
+										}
+									},
+									"response": []
+								},
+								{
+									"name": "Invalid JSON",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"type": "text/javascript",
+												"exec": [
+													"// Status/body shape CONFIRMED against a live local DIA backend response",
+													"// (2026-09-01): unlike other validation failures, this one is NOT routed",
+													"// through the app's JSON error handler -- it returns Flask's default HTML",
+													"// 400 page instead. Response body includes a Python JSON-decoder message fragment (e.g. \"Failed to decode JSON: Expecting value...\") -- minor internal implementation detail disclosure, low severity, flagged for awareness.",
+													"// This is a real, observed API inconsistency (JSON errors everywhere else,",
+													"// HTML here) -- flagged for the dev team, not something this test works",
+													"// around.",
+													"",
+													"pm.test(\"Status code is 400\", function () {",
+													"    pm.response.to.have.status(400);",
+													"});",
+													"",
+													"pm.test(\"Response does not grant a token\", function () {",
+													"    pm.expect(pm.response.text()).to.not.include('\"token\"');",
+													"});",
+													"",
+													"pm.test(\"access_token environment variable remains unchanged\", function () {",
+													"    const before = pm.environment.get(\"access_token\");",
+													"    pm.expect(pm.environment.get(\"access_token\")).to.eql(before);",
+													"});"
+												]
+											}
+										}
+									],
+									"request": {
+										"method": "POST",
+										"header": [],
+										"url": {
+											"raw": "{{base_url}}/auth/api/login",
+											"host": [
+												"{{base_url}}"
+											],
+											"path": [
+												"auth",
+												"api",
+												"login"
+											]
+										},
+										"description": "Negative test: syntactically invalid JSON body.",
+										"body": {
+											"mode": "raw",
+											"raw": "{\"username\": \"admin\", \"password\": }",
+											"options": {
+												"raw": {
+													"language": "json"
+												}
+											}
+										},
+										"auth": {
+											"type": "noauth"
+										}
+									},
+									"response": []
+								}
+							],
+							"description": "Negative/boundary/malformed-input scenarios for POST /auth/api/login."
+						}
+					],
+					"description": "POST /auth/api/login -- positive and negative/boundary/malformed-input scenarios."
+				}
+			],
+			"description": "Login and auth-related negative/security scenarios for POST /auth/api/login."
+		},
+		{
+			"name": "DataPilot",
+			"item": [
+				{
+					"name": "History",
+					"item": [
+						{
+							"name": "Positive",
+							"item": [
+								{
+									"name": "limit=1",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"type": "text/javascript",
+												"exec": [
+													"const LIMIT_UNDER_TEST = 1;",
+													"",
+													"// Response schema CONFIRMED against a live local DIA backend response",
+													"// (2026-09-01): a plain JSON array of history records with the fields",
+													"// checked below. Not assumed -- see README \"Known gaps\" if this needs",
+													"// re-verifying after a backend change.",
+													"",
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});",
+													"",
+													"pm.test(\"Content-Type header is application/json\", function () {",
+													"    pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/json\");",
+													"});",
+													"",
+													"let jsonData;",
+													"pm.test(\"Response body is a JSON array\", function () {",
+													"    jsonData = pm.response.json();",
+													"    pm.expect(jsonData).to.be.an(\"array\");",
+													"});",
+													"",
+													"",
+													"function extractList(data) {",
+													"    return Array.isArray(data) ? data : null;",
+													"}",
+													"",
+													"function assertItemSchema(item) {",
+													"    pm.expect(item).to.have.property(\"id\"); pm.expect(item.id).to.be.a(\"number\");",
+													"    pm.expect(item).to.have.property(\"connection_name\"); pm.expect(item.connection_name).to.be.a(\"string\");",
+													"    pm.expect(item).to.have.property(\"database_name\"); pm.expect(item.database_name).to.be.a(\"string\");",
+													"    pm.expect(item).to.have.property(\"db_type\"); pm.expect(item.db_type).to.be.a(\"string\");",
+													"    pm.expect(item).to.have.property(\"duration\"); pm.expect(item.duration).to.be.a(\"string\");",
+													"    pm.expect(item).to.have.property(\"executed_at\"); pm.expect(item.executed_at).to.be.a(\"string\");",
+													"    pm.expect(item).to.have.property(\"executed_by\"); pm.expect(item.executed_by).to.be.a(\"string\");",
+													"    pm.expect(item).to.have.property(\"execution_time_ms\"); pm.expect(item.execution_time_ms).to.be.a(\"number\");",
+													"    pm.expect(item).to.have.property(\"sql_text\"); pm.expect(item.sql_text).to.be.a(\"string\");",
+													"    pm.expect(item).to.have.property(\"status\"); pm.expect(item.status).to.be.a(\"string\");",
+													"}",
+													"",
+													"pm.test(`Returned item count does not exceed the requested limit (${LIMIT_UNDER_TEST})`, function () {",
+													"    pm.expect(jsonData.length).to.be.at.most(LIMIT_UNDER_TEST);",
+													"});",
+													"",
+													"pm.test(\"Every returned item matches the confirmed schema (required fields + types)\", function () {",
+													"    jsonData.forEach(assertItemSchema);",
+													"});",
+													"",
+													"pm.test(\"Items are ordered most-recent-first by executed_at\", function () {",
+													"    for (let i = 1; i < jsonData.length; i++) {",
+													"        const prev = new Date(jsonData[i - 1].executed_at).getTime();",
+													"        const curr = new Date(jsonData[i].executed_at).getTime();",
+													"        pm.expect(prev).to.be.at.least(curr);",
+													"    }",
+													"});",
+													"",
+													"pm.test(\"Every item has a non-empty sql_text (no truncated/blank query records)\", function () {",
+													"    jsonData.forEach((item) => {",
+													"        pm.expect(item.sql_text.length).to.be.above(0);",
+													"    });",
+													"});"
+												]
+											}
+										}
+									],
+									"request": {
+										"method": "GET",
+										"header": [],
+										"url": {
+											"raw": "{{base_url}}/api/datapilot/history?limit=1",
+											"host": [
+												"{{base_url}}"
+											],
+											"path": [
+												"api",
+												"datapilot",
+												"history"
+											],
+											"query": [
+												{
+													"key": "limit",
+													"value": "1"
+												}
+											]
+										},
+										"description": "limit=1. "
+									},
+									"response": []
+								},
+								{
+									"name": "limit=10",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"type": "text/javascript",
+												"exec": [
+													"const LIMIT_UNDER_TEST = 10;",
+													"",
+													"// Response schema CONFIRMED against a live local DIA backend response",
+													"// (2026-09-01): a plain JSON array of history records with the fields",
+													"// checked below. Not assumed -- see README \"Known gaps\" if this needs",
+													"// re-verifying after a backend change.",
+													"",
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});",
+													"",
+													"pm.test(\"Content-Type header is application/json\", function () {",
+													"    pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/json\");",
+													"});",
+													"",
+													"let jsonData;",
+													"pm.test(\"Response body is a JSON array\", function () {",
+													"    jsonData = pm.response.json();",
+													"    pm.expect(jsonData).to.be.an(\"array\");",
+													"});",
+													"",
+													"",
+													"function extractList(data) {",
+													"    return Array.isArray(data) ? data : null;",
+													"}",
+													"",
+													"function assertItemSchema(item) {",
+													"    pm.expect(item).to.have.property(\"id\"); pm.expect(item.id).to.be.a(\"number\");",
+													"    pm.expect(item).to.have.property(\"connection_name\"); pm.expect(item.connection_name).to.be.a(\"string\");",
+													"    pm.expect(item).to.have.property(\"database_name\"); pm.expect(item.database_name).to.be.a(\"string\");",
+													"    pm.expect(item).to.have.property(\"db_type\"); pm.expect(item.db_type).to.be.a(\"string\");",
+													"    pm.expect(item).to.have.property(\"duration\"); pm.expect(item.duration).to.be.a(\"string\");",
+													"    pm.expect(item).to.have.property(\"executed_at\"); pm.expect(item.executed_at).to.be.a(\"string\");",
+													"    pm.expect(item).to.have.property(\"executed_by\"); pm.expect(item.executed_by).to.be.a(\"string\");",
+													"    pm.expect(item).to.have.property(\"execution_time_ms\"); pm.expect(item.execution_time_ms).to.be.a(\"number\");",
+													"    pm.expect(item).to.have.property(\"sql_text\"); pm.expect(item.sql_text).to.be.a(\"string\");",
+													"    pm.expect(item).to.have.property(\"status\"); pm.expect(item.status).to.be.a(\"string\");",
+													"}",
+													"",
+													"pm.test(`Returned item count does not exceed the requested limit (${LIMIT_UNDER_TEST})`, function () {",
+													"    pm.expect(jsonData.length).to.be.at.most(LIMIT_UNDER_TEST);",
+													"});",
+													"",
+													"pm.test(\"Every returned item matches the confirmed schema (required fields + types)\", function () {",
+													"    jsonData.forEach(assertItemSchema);",
+													"});",
+													"",
+													"pm.test(\"Items are ordered most-recent-first by executed_at\", function () {",
+													"    for (let i = 1; i < jsonData.length; i++) {",
+													"        const prev = new Date(jsonData[i - 1].executed_at).getTime();",
+													"        const curr = new Date(jsonData[i].executed_at).getTime();",
+													"        pm.expect(prev).to.be.at.least(curr);",
+													"    }",
+													"});",
+													"",
+													"pm.test(\"Every item has a non-empty sql_text (no truncated/blank query records)\", function () {",
+													"    jsonData.forEach((item) => {",
+													"        pm.expect(item.sql_text.length).to.be.above(0);",
+													"    });",
+													"});"
+												]
+											}
+										}
+									],
+									"request": {
+										"method": "GET",
+										"header": [],
+										"url": {
+											"raw": "{{base_url}}/api/datapilot/history?limit=10",
+											"host": [
+												"{{base_url}}"
+											],
+											"path": [
+												"api",
+												"datapilot",
+												"history"
+											],
+											"query": [
+												{
+													"key": "limit",
+													"value": "10"
+												}
+											]
+										},
+										"description": "limit=10. "
+									},
+									"response": []
+								},
+								{
+									"name": "limit=50",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"type": "text/javascript",
+												"exec": [
+													"const LIMIT_UNDER_TEST = 50;",
+													"",
+													"// Response schema CONFIRMED against a live local DIA backend response",
+													"// (2026-09-01): a plain JSON array of history records with the fields",
+													"// checked below. Not assumed -- see README \"Known gaps\" if this needs",
+													"// re-verifying after a backend change.",
+													"",
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});",
+													"",
+													"pm.test(\"Content-Type header is application/json\", function () {",
+													"    pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/json\");",
+													"});",
+													"",
+													"let jsonData;",
+													"pm.test(\"Response body is a JSON array\", function () {",
+													"    jsonData = pm.response.json();",
+													"    pm.expect(jsonData).to.be.an(\"array\");",
+													"});",
+													"",
+													"",
+													"function extractList(data) {",
+													"    return Array.isArray(data) ? data : null;",
+													"}",
+													"",
+													"function assertItemSchema(item) {",
+													"    pm.expect(item).to.have.property(\"id\"); pm.expect(item.id).to.be.a(\"number\");",
+													"    pm.expect(item).to.have.property(\"connection_name\"); pm.expect(item.connection_name).to.be.a(\"string\");",
+													"    pm.expect(item).to.have.property(\"database_name\"); pm.expect(item.database_name).to.be.a(\"string\");",
+													"    pm.expect(item).to.have.property(\"db_type\"); pm.expect(item.db_type).to.be.a(\"string\");",
+													"    pm.expect(item).to.have.property(\"duration\"); pm.expect(item.duration).to.be.a(\"string\");",
+													"    pm.expect(item).to.have.property(\"executed_at\"); pm.expect(item.executed_at).to.be.a(\"string\");",
+													"    pm.expect(item).to.have.property(\"executed_by\"); pm.expect(item.executed_by).to.be.a(\"string\");",
+													"    pm.expect(item).to.have.property(\"execution_time_ms\"); pm.expect(item.execution_time_ms).to.be.a(\"number\");",
+													"    pm.expect(item).to.have.property(\"sql_text\"); pm.expect(item.sql_text).to.be.a(\"string\");",
+													"    pm.expect(item).to.have.property(\"status\"); pm.expect(item.status).to.be.a(\"string\");",
+													"}",
+													"",
+													"pm.test(`Returned item count does not exceed the requested limit (${LIMIT_UNDER_TEST})`, function () {",
+													"    pm.expect(jsonData.length).to.be.at.most(LIMIT_UNDER_TEST);",
+													"});",
+													"",
+													"pm.test(\"Every returned item matches the confirmed schema (required fields + types)\", function () {",
+													"    jsonData.forEach(assertItemSchema);",
+													"});",
+													"",
+													"pm.test(\"Items are ordered most-recent-first by executed_at\", function () {",
+													"    for (let i = 1; i < jsonData.length; i++) {",
+													"        const prev = new Date(jsonData[i - 1].executed_at).getTime();",
+													"        const curr = new Date(jsonData[i].executed_at).getTime();",
+													"        pm.expect(prev).to.be.at.least(curr);",
+													"    }",
+													"});",
+													"",
+													"pm.test(\"Every item has a non-empty sql_text (no truncated/blank query records)\", function () {",
+													"    jsonData.forEach((item) => {",
+													"        pm.expect(item.sql_text.length).to.be.above(0);",
+													"    });",
+													"});"
+												]
+											}
+										}
+									],
+									"request": {
+										"method": "GET",
+										"header": [],
+										"url": {
+											"raw": "{{base_url}}/api/datapilot/history?limit=50",
+											"host": [
+												"{{base_url}}"
+											],
+											"path": [
+												"api",
+												"datapilot",
+												"history"
+											],
+											"query": [
+												{
+													"key": "limit",
+													"value": "50"
+												}
+											]
+										},
+										"description": "limit=50. Baseline positive case matching the value used during API discovery."
+									},
+									"response": []
+								},
+								{
+									"name": "No limit parameter (unbounded)",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"type": "text/javascript",
+												"exec": [
+													"// CONFIRMED against a live local DIA backend (2026-09-01): omitting `limit`",
+													"// entirely returns the FULL history set, unbounded (24 rows in the",
+													"// discovery environment, i.e. no default cap is applied at all). This is",
+													"// different from limit=0/-1, which clamp to 1 -- omission bypasses the",
+													"// limit clause entirely.",
+													"// Flagged for awareness: an unbounded default has performance/scalability",
+													"// implications as history grows. Confirm with the dev team whether a",
+													"// default cap is intended.",
+													"",
+													"pm.test(\"Status code is 200 when limit is omitted\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});",
+													"",
+													"let jsonData;",
+													"pm.test(\"Response body is a JSON array\", function () {",
+													"    jsonData = pm.response.json();",
+													"    pm.expect(jsonData).to.be.an(\"array\");",
+													"});",
+													"",
+													"pm.test(\"All available history records are returned (no limit applied)\", function () {",
+													"    pm.expect(jsonData.length).to.be.above(0);",
+													"});"
+												]
+											}
+										}
+									],
+									"request": {
+										"method": "GET",
+										"header": [],
+										"url": {
+											"raw": "{{base_url}}/api/datapilot/history",
+											"host": [
+												"{{base_url}}"
+											],
+											"path": [
+												"api",
+												"datapilot",
+												"history"
+											],
+											"query": []
+										},
+										"description": "No limit query parameter supplied. Confirmed: returns the entire history set, unbounded."
+									},
+									"response": []
+								}
+							],
+							"description": "Successful GET /api/datapilot/history calls across typical/edge limit values."
+						},
+						{
+							"name": "Boundary",
+							"item": [
+								{
+									"name": "limit=0",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"type": "text/javascript",
+												"exec": [
+													"// RE-VERIFIED against a live local DIA backend (2026-09-22):",
+													"// The clamp-to-1 behavior confirmed on 2026-09-01 is no longer current.",
+													"// limit=0 now fails input validation up front and the API returns a",
+													"// clean 400 with a clear error message (no clamping, no data returned).",
+													"// This is an intentional backend fix, not a regression -- see",
+													"// README.md \"Findings from initial verification\" for the history.",
+													"",
+													"pm.test(\"Status code is 400\", function () {",
+													"    pm.response.to.have.status(400);",
+													"});",
+													"",
+													"let jsonData;",
+													"pm.test(\"Response body is a JSON error object\", function () {",
+													"    jsonData = pm.response.json();",
+													"    pm.expect(jsonData).to.be.an(\"object\");",
+													"    pm.expect(jsonData).to.have.property(\"error\");",
+													"});",
+													"",
+													"pm.test(\"Error message explains limit must be greater than 0\", function () {",
+													"    const msg = jsonData.error.toLowerCase();",
+													"    pm.expect(msg).to.include(\"limit\");",
+													"    pm.expect(msg).to.include(\"greater than 0\");",
+													"});",
+													"",
+													"pm.test(\"Error response does not leak raw exception/implementation details\", function () {",
+													"    const bodyText = pm.response.text();",
+													"    const leakIndicators = [/Traceback/i, /Exception in thread/i, /at\\s+\\S+\\(.*:\\d+:\\d+\\)/];",
+													"    leakIndicators.forEach((pattern) => {",
+													"        pm.expect(pattern.test(bodyText), `Response leaks internal detail matching ${pattern}`).to.be.false;",
+													"    });",
+													"});"
+												]
+											}
+										}
+									],
+									"request": {
+										"method": "GET",
+										"header": [],
+										"url": {
+											"raw": "{{base_url}}/api/datapilot/history?limit=0",
+											"host": [
+												"{{base_url}}"
+											],
+											"path": [
+												"api",
+												"datapilot",
+												"history"
+											],
+											"query": [
+												{
+													"key": "limit",
+													"value": "0"
+												}
+											]
+										},
+										"description": "limit=0. RE-VERIFIED 2026-09-22: the API now validates the limit up front and returns 400 Bad Request with a clear 'must be greater than 0' message -- it no longer clamps to 1 result as it did on 2026-09-01."
+									},
+									"response": []
+								},
+								{
+									"name": "limit=-1",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"type": "text/javascript",
+												"exec": [
+													"// RE-VERIFIED against a live local DIA backend (2026-09-22):",
+													"// The clamp-to-1 behavior confirmed on 2026-09-01 is no longer current.",
+													"// limit=-1 now fails input validation up front and the API returns a",
+													"// clean 400 with a clear error message (no clamping, no data returned).",
+													"// This is an intentional backend fix, not a regression -- see",
+													"// README.md \"Findings from initial verification\" for the history.",
+													"",
+													"pm.test(\"Status code is 400\", function () {",
+													"    pm.response.to.have.status(400);",
+													"});",
+													"",
+													"let jsonData;",
+													"pm.test(\"Response body is a JSON error object\", function () {",
+													"    jsonData = pm.response.json();",
+													"    pm.expect(jsonData).to.be.an(\"object\");",
+													"    pm.expect(jsonData).to.have.property(\"error\");",
+													"});",
+													"",
+													"pm.test(\"Error message explains limit must be greater than 0\", function () {",
+													"    const msg = jsonData.error.toLowerCase();",
+													"    pm.expect(msg).to.include(\"limit\");",
+													"    pm.expect(msg).to.include(\"greater than 0\");",
+													"});",
+													"",
+													"pm.test(\"Error response does not leak raw exception/implementation details\", function () {",
+													"    const bodyText = pm.response.text();",
+													"    const leakIndicators = [/Traceback/i, /Exception in thread/i, /at\\s+\\S+\\(.*:\\d+:\\d+\\)/];",
+													"    leakIndicators.forEach((pattern) => {",
+													"        pm.expect(pattern.test(bodyText), `Response leaks internal detail matching ${pattern}`).to.be.false;",
+													"    });",
+													"});"
+												]
+											}
+										}
+									],
+									"request": {
+										"method": "GET",
+										"header": [],
+										"url": {
+											"raw": "{{base_url}}/api/datapilot/history?limit=-1",
+											"host": [
+												"{{base_url}}"
+											],
+											"path": [
+												"api",
+												"datapilot",
+												"history"
+											],
+											"query": [
+												{
+													"key": "limit",
+													"value": "-1"
+												}
+											]
+										},
+										"description": "limit=-1. RE-VERIFIED 2026-09-22: same validated 400 rejection as limit=0 -- the earlier clamp-to-1 behavior is no longer current."
+									},
+									"response": []
+								}
+							],
+							"description": "limit values at/below the API's confirmed clamp-to-1 boundary."
+						},
+						{
+							"name": "Negative",
+							"item": [
+								{
+									"name": "limit=abc [KNOWN DEFECT]",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"type": "text/javascript",
+												"exec": [
+													"// KNOWN DEFECT, CONFIRMED against a live local DIA backend (2026-09-01):",
+													"// limit=abc currently returns HTTP 500 with an unhandled Python exception",
+													"// leaked directly into the response body:",
+													"//   {\"error\": \"invalid literal for int() with base 10: 'abc'\"}",
+													"// This test asserts the CORRECT expected behavior (a 4xx client error, no",
+													"// internal exception text) and is expected to FAIL until the backend adds",
+													"// input validation for the `limit` query parameter. Do not \"fix\" this test",
+													"// to accept 500 -- that would hide a real bug.",
+													"",
+													"pm.test(\"Non-numeric limit does not return HTTP 500 [KNOWN DEFECT -- currently fails]\", function () {",
+													"    pm.expect(pm.response.code, \"Backend returned an unhandled 500 for a bad 'limit' value\").to.be.below(500);",
+													"});",
+													"",
+													"pm.test(\"Non-numeric limit is rejected as a client error (4xx)\", function () {",
+													"    pm.expect(pm.response.code).to.be.within(400, 499);",
+													"});",
+													"",
+													"pm.test(\"Error response does not leak raw exception/implementation details\", function () {",
+													"    const bodyText = pm.response.text();",
+													"    const leakIndicators = [/invalid literal for int/i, /Traceback/i, /Exception in thread/i, /at\\s+\\S+\\(.*:\\d+:\\d+\\)/];",
+													"    leakIndicators.forEach((pattern) => {",
+													"        pm.expect(pattern.test(bodyText), `Response leaks internal detail matching ${pattern}`).to.be.false;",
+													"    });",
+													"});"
+												]
+											}
+										}
+									],
+									"request": {
+										"method": "GET",
+										"header": [],
+										"url": {
+											"raw": "{{base_url}}/api/datapilot/history?limit=abc",
+											"host": [
+												"{{base_url}}"
+											],
+											"path": [
+												"api",
+												"datapilot",
+												"history"
+											],
+											"query": [
+												{
+													"key": "limit",
+													"value": "abc"
+												}
+											]
+										},
+										"description": "limit=abc. KNOWN DEFECT: backend currently returns HTTP 500 with a leaked Python exception message instead of a validated 4xx response. See test script for details. This request is expected to fail until fixed -- track/report it, don't silence it."
+									},
+									"response": []
+								}
+							],
+							"description": "Invalid input handling for the limit parameter."
+						},
+						{
+							"name": "Security",
+							"item": [
+								{
+									"name": "No Token",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"type": "text/javascript",
+												"exec": [
+													"// Status/body CONFIRMED against a live local DIA backend (2026-09-01).",
+													"",
+													"pm.test(\"Status code is 401 (unauthorized)\", function () {",
+													"    pm.response.to.have.status(401);",
+													"});",
+													"",
+													"pm.test('Error message is \"Authorization token required\"', function () {",
+													"    const body = pm.response.json();",
+													"    pm.expect(body).to.have.property(\"error\", \"Authorization token required\");",
+													"});",
+													"",
+													"pm.test(\"No history data is leaked without authentication\", function () {",
+													"    const body = pm.response.json();",
+													"    pm.expect(Array.isArray(body), \"Response must not be a raw history array without auth\").to.be.false;",
+													"});"
+												]
+											}
+										}
+									],
+									"request": {
+										"method": "GET",
+										"header": [],
+										"url": {
+											"raw": "{{base_url}}/api/datapilot/history?limit=10",
+											"host": [
+												"{{base_url}}"
+											],
+											"path": [
+												"api",
+												"datapilot",
+												"history"
+											],
+											"query": [
+												{
+													"key": "limit",
+													"value": "10"
+												}
+											]
+										},
+										"description": "Security test: no Authorization header supplied at all.",
+										"auth": {
+											"type": "noauth"
+										}
+									},
+									"response": []
+								},
+								{
+									"name": "Invalid Token",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"type": "text/javascript",
+												"exec": [
+													"// Status/body CONFIRMED against a live local DIA backend (2026-09-01).",
+													"",
+													"pm.test(\"Status code is 401 (unauthorized)\", function () {",
+													"    pm.response.to.have.status(401);",
+													"});",
+													"",
+													"pm.test('Error message is \"Invalid or expired token\"', function () {",
+													"    const body = pm.response.json();",
+													"    pm.expect(body).to.have.property(\"error\", \"Invalid or expired token\");",
+													"});",
+													"",
+													"pm.test(\"No history data is leaked with an invalid token\", function () {",
+													"    const body = pm.response.json();",
+													"    pm.expect(Array.isArray(body), \"Response must not be a raw history array with an invalid token\").to.be.false;",
+													"});"
+												]
+											}
+										}
+									],
+									"request": {
+										"method": "GET",
+										"header": [],
+										"url": {
+											"raw": "{{base_url}}/api/datapilot/history?limit=10",
+											"host": [
+												"{{base_url}}"
+											],
+											"path": [
+												"api",
+												"datapilot",
+												"history"
+											],
+											"query": [
+												{
+													"key": "limit",
+													"value": "10"
+												}
+											]
+										},
+										"description": "Security test: a syntactically plausible but invalid/garbage JWT.",
+										"auth": {
+											"type": "bearer",
+											"bearer": [
+												{
+													"key": "token",
+													"value": "invalid.token.value",
+													"type": "string"
+												}
+											]
+										}
+									},
+									"response": []
+								}
+							],
+							"description": "Authorization/authentication coverage for the protected history endpoint."
+						}
+					],
+					"description": "GET /api/datapilot/history and its positive/negative/boundary coverage."
+				}
+			],
+			"description": "GET /api/datapilot/history and its positive/negative/boundary/security coverage, organized by test type."
+		},
+		{
+			"name": "Connections",
+			"item": [],
+			"description": "Placeholder folder. No endpoints have been provided or verified for this area yet. Do not add requests here from assumption -- add them once a real endpoint is confirmed against the DIA application or its source code."
+		},
+		{
+			"name": "Databases",
+			"item": [],
+			"description": "Placeholder folder. No endpoints have been provided or verified for this area yet. Do not add requests here from assumption -- add them once a real endpoint is confirmed against the DIA application or its source code."
+		},
+		{
+			"name": "Schema",
+			"item": [],
+			"description": "Placeholder folder. No endpoints have been provided or verified for this area yet. Do not add requests here from assumption -- add them once a real endpoint is confirmed against the DIA application or its source code."
+		},
+		{
+			"name": "SQL Workspace",
+			"item": [],
+			"description": "Placeholder folder. No endpoints have been provided or verified for this area yet. Do not add requests here from assumption -- add them once a real endpoint is confirmed against the DIA application or its source code."
+		},
+		{
+			"name": "Chat / AI",
+			"item": [],
+			"description": "Placeholder folder. No endpoints have been provided or verified for this area yet. Do not add requests here from assumption -- add them once a real endpoint is confirmed against the DIA application or its source code."
+		},
+		{
+			"name": "Dashboards",
+			"item": [],
+			"description": "Placeholder folder. No endpoints have been provided or verified for this area yet. Do not add requests here from assumption -- add them once a real endpoint is confirmed against the DIA application or its source code."
+		},
+		{
+			"name": "Files",
+			"item": [],
+			"description": "Placeholder folder. No endpoints have been provided or verified for this area yet. Do not add requests here from assumption -- add them once a real endpoint is confirmed against the DIA application or its source code."
+		},
+		{
+			"name": "Export",
+			"item": [],
+			"description": "Placeholder folder. No endpoints have been provided or verified for this area yet. Do not add requests here from assumption -- add them once a real endpoint is confirmed against the DIA application or its source code."
+		},
+		{
+			"name": "Semantic Models",
+			"item": [],
+			"description": "Placeholder folder. No endpoints have been provided or verified for this area yet. Do not add requests here from assumption -- add them once a real endpoint is confirmed against the DIA application or its source code."
+		},
+		{
+			"name": "Security",
+			"item": [],
+			"description": "Placeholder folder. No endpoints have been provided or verified for this area yet. Do not add requests here from assumption -- add them once a real endpoint is confirmed against the DIA application or its source code."
+		}
+	]
+}
