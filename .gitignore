@@ -1,16 +1,19 @@
-# Newman/Postman CLI reports
-newman/reports/*
-!newman/reports/.gitkeep
-
-# Node (if newman is installed locally as a dev dependency)
+# Node
 node_modules/
 
 # OS files
 .DS_Store
 Thumbs.db
 
-# Any local, filled-in environment exports (real credentials/tokens)
-# The committed template lives at postman/environments/DIA-Local.postman_environment.json
-# with all secret values left empty -- never commit a populated copy under a different name.
-*.postman_environment.local.json
+# Local credentials: never commit
 .env
+
+# Playwright output (generated)
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+/playwright/.auth/
+/pw-poc/playwright-report/
+/pw-poc/test-results/
+/pw-poc/results/

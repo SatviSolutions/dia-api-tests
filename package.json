@@ -1,9 +1,11 @@
 {
   "scripts": {
-    "test": "./newman/run-tests.sh",
-    "report": "node newman/generate-report.js"
+    "test": "playwright test -c pw-poc",
+    "test:api": "playwright test -c pw-poc",
+    "test:api:report": "playwright show-report pw-poc/playwright-report"
   },
   "devDependencies": {
-    "newman": "^6.2.2"
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^26.6.4"
   }
 }
