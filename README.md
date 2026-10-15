@@ -15,7 +15,7 @@ library), API only (no browser, no `page`, no UI selectors), no database testing
 ```bash
 npm install
 cp pw-poc/.env.example pw-poc/.env      # then fill in DIA_USERNAME / DIA_PASSWORD (gitignored, never commit it)
-npm test                                # whole Playwright API suite (same as `npm run test:api`), about 12 s
+npm test                                # whole Playwright API suite (same as `npm run test:api`), about 12 s; also refreshes the consolidated report (see below)
 npm run test:api:report                 # open the HTML report of the last run
 npx playwright test -c pw-poc tests/authz.spec.js        # one spec
 npx playwright test -c pw-poc -g "history limit"         # tests whose title matches
@@ -23,6 +23,43 @@ npx playwright test -c pw-poc -g "history limit"         # tests whose title mat
 
 Reports: `pw-poc/playwright-report/` (HTML) and `pw-poc/results/junit.xml`. Browsers are never launched, so
 `npx playwright install` is not needed for these tests.
+
+## Consolidated endpoint report (http://localhost:9400)
+
+One page that combines **test execution results** with an **endpoint-by-endpoint status** for all 594 routes of
+`pw-poc/endpoint-inventory.json`, with filters (method, route search, module, status), expandable details per endpoint and per test,
+failure reasons, BLOCKED reasons with what is needed to unblock, and documentation-drift flags.
+
+```bash
+npm test                 # run the FULL suite, publish the report and make sure the report server is running (same as npm run test:report)
+npm run report:start     # start the report server in the background -> open http://localhost:9400/
+npm run report:stop      # stop it         (npm run report:status shows whether it runs; npm run report:serve = foreground)
+```
+
+After every `npm test` the report server is started if it is not already running and its URL is printed (the test exit code is preserved). The server binds `127.0.0.1:9400` only. If the port is taken it stops with a message and never picks another one
+(`DIA_REPORT_PORT` overrides it explicitly). A new report appears on its own; the open page reloads itself.
+
+**Endpoint statuses** (computed from the run, separate from the documented classification, which is never edited):
+`PASSED` (a test-body request reached it and every test that reached it passed), `FAILED`, `SKIPPED`, `DEFECT-ONLY` (reached only
+by expected-failure `test.fail` tests, which never establish PASSED), `BLOCKED`, `MISSING`, `NOT REQUIRED`, and `NOT RUN` (documented as
+covered but not reached in this run, and every unreached covered endpoint in a partial run). An HTTP 200 alone never makes an endpoint
+PASSED. Only requests made inside the test body count: `beforeAll`/`afterAll`, fixtures, logins and cleanup are kept apart as
+diagnostics. A **DRIFT** badge flags a disagreement between the run and the documented classification (for example a documented Missing
+route that a test reached). Response codes shown are the recorded ones; routes nobody requested show none.
+
+**Which run replaces which report** (`pw-poc/report/`, generated and gitignored):
+
+| Run | Published to | Replaces the main report? |
+|---|---|---|
+| complete, successful full suite (no unexpected failure) | `/` (`report/current`) | yes, atomically |
+| complete full suite with unexpected test failures | `/failed-full` (FAILED endpoints are shown there) | no, the main report is preserved |
+| partial (spec file, `-g`, shard, `.only`, missing spec, tests that did not run, fewer tests than the last full run) | `/partial` | never |
+| interrupted, global error, environment/login failure, no test executed (e.g. `--list`), report-generation error | nowhere | no, the last valid report stays |
+
+If completeness cannot be established the run counts as partial. Reports are built in a staging directory, validated (counts add up, no
+secret or JWT in the output) and published by atomically replacing a symlink; only the previous run directory of the same slot is
+removed. The existing `playwright-report/` and `results/junit.xml` outputs are still written by every run, as before. Reports contain
+no headers, tokens, request bodies or query values, and error text is redacted.
 
 ## Configuration (environment variables)
 
@@ -44,8 +81,11 @@ Real environment variables win over `pw-poc/.env`. Missing credentials make the 
 | `clients/*.js` | one class per API area (request code only, **no assertions**) |
 | `helpers/assertions.js` | the few repeated checks: `expectError`, `expectUnauthorized`, `expectNoSensitiveData`, `expectNoSecretKeys` |
 | `tests/*.spec.js` | the tests: the request, the input and the expected behaviour are visible in each test |
-| `COVERAGE_MAP.md` | endpoint-level coverage: every backend route + method, its Playwright test, status, priority, notes |
+| `COVERAGE_MAP.md` | endpoint-level coverage of the QA backend source (594 route + method combinations): status (Covered, Defect-only, Missing, Blocked, Not Required), priority, notes, a BLOCKED section with reason and unblock requirement, and a separate uncounted section for routes found only in `/home/dia/backend` |
 | `COVERAGE_GAPS.md` | prioritised remaining gaps (dated snapshot) |
+| `reporters/` | the consolidated-report reporter, route matcher and HTML/JUnit renderer (only active with `npm run test:report`) |
+| `report/serve.js` | the local report server (`127.0.0.1:9400`); generated reports under `report/` are gitignored |
+| `endpoint-inventory.json` | machine-readable copy of the inventory (static classification read from source; **not** a runtime result and not verified runtime availability) |
 
 **Global checks** run automatically after every test (fixture `checks`): response time, no unexpected 5xx, no echoed password, no
 secret-shaped fields. In `test.fail` tests they are recorded as annotations so a fixed defect still flips the test to red.
@@ -96,6 +136,8 @@ Previously known and now **fixed in the backend**: `history?limit=abc` returns 4
   `/api/connections/<id>/knowledge-graph*`.
 
 ## Blocked (not skipped silently)
+
+Blocked endpoints are never counted as covered. Every blocked route (170 in the QA inventory) is listed with its exact method, route, reason and what is needed to unblock it in the **BLOCKED endpoints** section of `pw-poc/COVERAGE_MAP.md`; the table below summarises the main causes.
 
 | Item | Why |
 |---|---|

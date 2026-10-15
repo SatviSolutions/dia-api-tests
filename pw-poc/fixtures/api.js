@@ -25,6 +25,48 @@ const MAX_RESPONSE_MS = Number(process.env.DIA_MAX_RESPONSE_MS || 3000);
 
 // Every request made through `api` / `anonymous` is recorded here; the `checks` fixture inspects it after each test.
 const calls = { current: [] };
+
+// Sanitized request log for the consolidated report (DIA_CONSOLIDATED_REPORT=1): method, path, query KEY names, status code,
+// time and phase only. Never headers, bodies or query values. `phase` is 'test' while a test body runs, 'fixture' during the
+// worker-scoped logins and 'hook' otherwise (beforeAll/afterAll setup and cleanup). Only 'test' requests count as endpoint
+// evidence in the report; the others are kept for diagnostics.
+const REPORT_ENABLED = process.env.DIA_CONSOLIDATED_REPORT === '1';
+const requestLog = { phase: 'hook', test: [], other: [] };
+const withoutJwt = (text) => String(text).replace(/eyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]*/g, '[redacted]');
+function describeTarget(target) {
+  try {
+    const url = new URL(typeof target === 'string' ? target : String(target), baseURL || 'http://localhost');
+    const external = Boolean(baseURL) && url.origin !== new URL(baseURL).origin;
+    return { path: withoutJwt(url.pathname), query: [...new Set([...url.searchParams.keys()])], external };
+  } catch {
+    return { path: '', query: [], external: true };
+  }
+}
+function recordRequest(method, target, response, started) {
+  const requested = describeTarget(target);
+  const final = describeTarget(response.url());
+  (requestLog.phase === 'test' ? requestLog.test : requestLog.other).push({
+    method,
+    requestedPath: requested.path,
+    finalPath: final.path,
+    query: requested.query,
+    status: response.status(),
+    ms: Date.now() - started,
+    startedAt: new Date(started).toISOString(),
+    phase: requestLog.phase,
+    external: requested.external || final.external,
+  });
+}
+async function inPhase(phase, work) {
+  const previous = requestLog.phase;
+  requestLog.phase = phase;
+  try {
+    return await work();
+  } finally {
+    requestLog.phase = previous;
+  }
+}
+
 const HTTP_METHODS = new Set(['get', 'post', 'put', 'patch', 'delete', 'head', 'fetch']);
 function recorded(context) {
   return new Proxy(context, {
@@ -35,8 +77,10 @@ function recorded(context) {
       return async (...args) => {
         const started = Date.now();
         const response = await value.apply(target, args);
-        const requestData = args[1] && args[1].data;
-        calls.current.push({ method: prop.toUpperCase(), url: response.url(), status: response.status(), ms: Date.now() - started, requestData, response });
+        const options = args[1] || {};
+        const method = prop === 'fetch' ? String(options.method || 'GET').toUpperCase() : prop.toUpperCase();
+        calls.current.push({ method, url: response.url(), status: response.status(), ms: Date.now() - started, requestData: options.data, response });
+        if (REPORT_ENABLED) recordRequest(method, args[0], response, started);
         return response;
       };
     },
@@ -68,7 +112,7 @@ const test = base.test.extend({
   token: [async ({ anonymous }, use) => {
     const { DIA_USERNAME: username, DIA_PASSWORD: password } = process.env;
     if (!username || !password) throw new Error('Set DIA_USERNAME and DIA_PASSWORD (environment variables or pw-poc/.env; see pw-poc/.env.example)');
-    const res = await anonymous.post('/auth/api/login', { data: { username, password } });
+    const res = await inPhase('fixture', () => anonymous.post('/auth/api/login', { data: { username, password } }));
     if (!res.ok()) throw new Error(`Login failed: HTTP ${res.status()}`);
     await use((await res.json()).token);
   }, { scope: 'worker' }],
@@ -77,7 +121,7 @@ const test = base.test.extend({
   viewerToken: [async ({ anonymous }, use) => {
     const { DIA_VIEWER_USERNAME: username, DIA_VIEWER_PASSWORD: password } = process.env;
     if (!username || !password) return use(null);
-    const res = await anonymous.post('/auth/api/login', { data: { username, password } });
+    const res = await inPhase('fixture', () => anonymous.post('/auth/api/login', { data: { username, password } }));
     if (!res.ok()) throw new Error(`Non-admin login failed: HTTP ${res.status()}`);
     await use((await res.json()).token);
   }, { scope: 'worker' }],
@@ -112,10 +156,22 @@ const test = base.test.extend({
   //   fixed defect still flips the test to red instead of being masked by an unrelated global finding.
   checks: [async ({ token }, use, testInfo) => { // `token` first, so the one-off worker login is not counted
     calls.current = [];
+    const earlierNonTest = requestLog.other.splice(0); // setup/cleanup requests since the previous test (diagnostics only)
+    requestLog.test = [];
+    requestLog.phase = 'test';
     await use({
       problems: globalProblems, // everything the global checks object to so far, as readable strings
       reset: () => { calls.current = []; }, // only for self-tests that provoke a violation on purpose
     });
+    requestLog.phase = 'hook'; // from here on (afterAll cleanup, the next beforeAll) requests are not test-body evidence
+    if (REPORT_ENABLED) {
+      try {
+        await testInfo.attach('api-requests.json', {
+          contentType: 'application/json',
+          body: JSON.stringify({ version: 1, requests: requestLog.test, nonTestRequests: earlierNonTest.concat(requestLog.other.splice(0)) }),
+        });
+      } catch { /* the report is optional: never fail a test because of it */ }
+    }
     const knownDefect = testInfo.expectedStatus === 'failed';
     const problems = await globalProblems();
     if (knownDefect) problems.forEach((description) => testInfo.annotations.push({ type: 'global-check', description }));

@@ -1,8 +1,13 @@
 {
   "scripts": {
-    "test": "playwright test -c pw-poc",
-    "test:api": "playwright test -c pw-poc",
-    "test:api:report": "playwright show-report pw-poc/playwright-report"
+    "test": "DIA_CONSOLIDATED_REPORT=1 playwright test -c pw-poc; ec=$?; node pw-poc/report/serve.js start; exit $ec",
+    "test:api": "DIA_CONSOLIDATED_REPORT=1 playwright test -c pw-poc; ec=$?; node pw-poc/report/serve.js start; exit $ec",
+    "test:api:report": "playwright show-report pw-poc/playwright-report",
+    "test:report": "DIA_CONSOLIDATED_REPORT=1 playwright test -c pw-poc; ec=$?; node pw-poc/report/serve.js start; exit $ec",
+    "report:serve": "node pw-poc/report/serve.js serve",
+    "report:start": "node pw-poc/report/serve.js start",
+    "report:stop": "node pw-poc/report/serve.js stop",
+    "report:status": "node pw-poc/report/serve.js status"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",

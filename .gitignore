@@ -17,3 +17,12 @@ Thumbs.db
 /pw-poc/playwright-report/
 /pw-poc/test-results/
 /pw-poc/results/
+
+# Consolidated report: generated output only (pw-poc/report/serve.js is source and stays tracked)
+/pw-poc/report/runs/
+/pw-poc/report/current
+/pw-poc/report/partial
+/pw-poc/report/failed-full
+/pw-poc/report/.server.pid
+/pw-poc/report/.server.log
+/pw-poc/report/.*.tmp
